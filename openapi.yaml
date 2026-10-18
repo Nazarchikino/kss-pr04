@@ -1,17 +1,19 @@
-# Шаблон специфікації OpenAPI 3.1 до практичної роботи № 4.
-# Замініть усі позначки <…> відповідно до вашого варіанта (VARIANTS.md).
+# Специфікація OpenAPI 3.1 до практичної роботи № 4.
+# Варіант № 8. Інформаційна система «Їдальня коледжу» (College Canteen API).
 # Перевірка: npm run lint · документація: npm run docs · імітаційний сервер: npm run mock
 openapi: 3.1.0
 info:
-  title: <Назва системи> API
+  title: Їдальня коледжу API
   version: 1.0.0
-  summary: <Одне речення про призначення API>
+  summary: REST API інформаційної системи їдальні коледжу для керування стравами, денним меню та замовленнями
   description: |
-    Варіант № <N>. Виконав(ла): <Прізвище Ім’я>, група 456-Д.
+    Варіант № 8. Виконав: Дерев’янчук Назар, група 456-Д.
 
     **Домовленості:** шляхи від `/api/v1`; ресурси – іменники в множині (kebab-case);
     JSON у camelCase; дати – ISO 8601; колекції – сторінками `{ items, page, pageSize, total }`;
-    помилки – `application/problem+json`; автентифікація – `Authorization: Bearer <токен>`.
+    помилки – `application/problem+json` (RFC 9457); автентифікація – `Authorization: Bearer <токен>`.
+    Читання окремого ресурсу (`GET`) підтримує умовні запити через `ETag` / `If-None-Match` (`304 Not Modified`),
+    а часткове оновлення (`PATCH`) – оптимістичне блокування через `If-Match` (`412 Precondition Failed`).
   license:
     name: MIT
     identifier: MIT
@@ -20,9 +22,13 @@ servers:
     description: Локальний сервер розробки
 tags:
   - name: auth
-    description: Автентифікація
-  # - name: <ресурс>
-  #   description: <опис>
+    description: Автентифікація користувачів і видача токенів
+  - name: orders
+    description: Замовлення в їдальні, позиції замовлень і зміна їхнього стану
+  - name: dishes
+    description: Каталог страв та напоїв їдальні
+  - name: menus
+    description: Щоденне меню їдальні (сніданки та обіди)
 security:
   - bearerAuth: []
 
@@ -52,14 +58,473 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
-  # Приклад структури колекції (розкоментуйте й адаптуйте):
-  # /<resources>:
-  #   get:      список зі сторінками, фільтрами й сортуванням
-  #   post:     створення → 201 + Location
-  # /<resources>/{<resource>Id}:
-  #   get / patch / delete (204)
-  # /<resources>/{<resource>Id}/<sub-resources>:   вкладена колекція
-  # /<resources>/{<resource>Id}/<action>:           дія (x-kss-action: true)
+  /orders:
+    get:
+      tags: [orders]
+      operationId: listOrders
+      summary: Список замовлень з фільтрацією, сортуванням і пагінацією
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: status
+          in: query
+          description: Фільтр за станом замовлення
+          schema:
+            $ref: "#/components/schemas/OrderStatus"
+        - name: customerId
+          in: query
+          description: Фільтр за ідентифікатором замовника
+          schema:
+            type: integer
+            minimum: 1
+        - name: sort
+          in: query
+          description: Поле сортування (префікс `-` для спадання)
+          schema:
+            type: string
+            enum: [createdAt, -createdAt, totalAmount, -totalAmount]
+            default: -createdAt
+      responses:
+        "200":
+          description: Сторінка списку замовлень
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [orders]
+      operationId: createOrder
+      summary: Створити нове замовлення в їдальні
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+      responses:
+        "201":
+          description: Замовлення успішно створено (початковий стан accepted)
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+
+  /orders/{orderId}:
+    parameters:
+      - $ref: "#/components/parameters/OrderId"
+    get:
+      tags: [orders]
+      operationId: getOrder
+      summary: Отримати замовлення за ідентифікатором (підтримує ETag)
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Детальні дані замовлення
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "304":
+          description: Замовлення не змінювалося (використовуйте кешовану копію)
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [orders]
+      operationId: updateOrder
+      summary: Частково оновити замовлення (коментар до початку приготування)
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOrderRequest"
+      responses:
+        "200":
+          description: Замовлення успішно оновлено
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+    delete:
+      tags: [orders]
+      operationId: deleteOrder
+      summary: Видалити замовлення (дозволено у стані accepted або адміністратором)
+      responses:
+        "204":
+          description: Замовлення успішно видалено (No Content)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /orders/{orderId}/items:
+    parameters:
+      - $ref: "#/components/parameters/OrderId"
+    get:
+      tags: [orders]
+      operationId: listOrderItems
+      summary: Список позицій конкретного замовлення (вкладена колекція)
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: sort
+          in: query
+          description: Сортування позицій замовлення
+          schema:
+            type: string
+            enum: [id, -lineTotal]
+            default: id
+      responses:
+        "200":
+          description: Сторінка позицій замовлення
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderItemPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [orders]
+      operationId: addOrderItem
+      summary: Додати нову страву (позицію) до замовлення у стані accepted
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderItemRequest"
+      responses:
+        "201":
+          description: Позицію додано до замовлення
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderItem"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+
+  /orders/{orderId}/status:
+    parameters:
+      - $ref: "#/components/parameters/OrderId"
+    post:
+      tags: [orders]
+      operationId: changeOrderStatus
+      summary: Змінити стан замовлення (прийнято -> готується -> видано; видає лише кухар)
+      x-kss-action: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOrderStatusRequest"
+      responses:
+        "200":
+          description: Стан замовлення успішно змінено
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+
+  /dishes:
+    get:
+      tags: [dishes]
+      operationId: listDishes
+      summary: Список страв у каталозі їдальні
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: category
+          in: query
+          description: Фільтр за категорією страви
+          schema:
+            $ref: "#/components/schemas/DishCategory"
+        - name: isAvailable
+          in: query
+          description: Фільтр за наявністю страви для замовлення
+          schema:
+            type: boolean
+        - name: maxPrice
+          in: query
+          description: Максимальна ціна страви (грн)
+          schema:
+            type: number
+            minimum: 1
+        - name: sort
+          in: query
+          description: Сортування страв
+          schema:
+            type: string
+            enum: [name, -name, price, -price, -createdAt]
+            default: name
+      responses:
+        "200":
+          description: Сторінка каталогу страв
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DishPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [dishes]
+      operationId: createDish
+      summary: Додати нову страву до каталогу їдальні (лише кухар або адмін)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDishRequest"
+      responses:
+        "201":
+          description: Страву створено
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dish"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+
+  /dishes/{dishId}:
+    parameters:
+      - $ref: "#/components/parameters/DishId"
+    get:
+      tags: [dishes]
+      operationId: getDish
+      summary: Отримати інформацію про страву за ідентифікатором (підтримує ETag)
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: Картка страви
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dish"
+        "304":
+          description: Картка страви не змінювалася
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [dishes]
+      operationId: updateDish
+      summary: Частково оновити страву (ціна, вихід або доступність; лише кухар)
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDishRequest"
+      responses:
+        "200":
+          description: Страву оновлено
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dish"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+    delete:
+      tags: [dishes]
+      operationId: deleteDish
+      summary: Видалити страву з каталогу (лише кухар або адмін)
+      responses:
+        "204":
+          description: Страву видалено (No Content)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /menus:
+    get:
+      tags: [menus]
+      operationId: listMenus
+      summary: Список денних меню їдальні
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: menuDate
+          in: query
+          description: Фільтр за датою меню (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+        - name: mealType
+          in: query
+          description: Фільтр за типом прийому їжі (сніданок чи обід)
+          schema:
+            $ref: "#/components/schemas/MealType"
+        - name: sort
+          in: query
+          description: Сортування за датою меню
+          schema:
+            type: string
+            enum: [menuDate, -menuDate]
+            default: -menuDate
+      responses:
+        "200":
+          description: Сторінка денних меню
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MenuPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [menus]
+      operationId: createMenu
+      summary: Опублікувати денне меню на дату (лише кухар або адмін)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMenuRequest"
+      responses:
+        "201":
+          description: Меню створено
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Menu"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
 
 components:
   securitySchemes:
@@ -86,6 +551,38 @@ components:
         minimum: 1
         maximum: 50
         default: 10
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      description: Унікальний ідентифікатор замовлення
+      schema:
+        type: integer
+        minimum: 1
+    DishId:
+      name: dishId
+      in: path
+      required: true
+      description: Унікальний ідентифікатор страви
+      schema:
+        type: integer
+        minimum: 1
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: Тег версії ресурсу (ETag) для умовного запиту читання (304 Not Modified)
+      schema:
+        type: string
+      example: '"v1-order-42-accepted"'
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: Очікуваний ETag ресурсу для захисту від втрати оновлень (412 Precondition Failed)
+      schema:
+        type: string
+      example: '"v1-order-42-accepted"'
 
   headers:
     Location:
@@ -93,6 +590,12 @@ components:
       schema:
         type: string
         format: uri-reference
+      example: /api/v1/orders/42
+    ETag:
+      description: Ідентифікатор поточної версії ресурсу для кешування та оптимістичного блокування
+      schema:
+        type: string
+      example: '"v1-order-42-accepted"'
 
   schemas:
     LoginRequest:
@@ -127,6 +630,473 @@ components:
         tokenType: Bearer
         expiresIn: 3600
 
+    DishCategory:
+      type: string
+      description: Категорія страви в меню їдальні
+      enum: [first_course, main_course, side_dish, salad, dessert, drink]
+      example: first_course
+
+    MealType:
+      type: string
+      description: Тип прийому їжі (сніданок або комплексний обід)
+      enum: [breakfast, lunch]
+      example: lunch
+
+    OrderStatus:
+      type: string
+      description: Стан життєвого циклу замовлення в їдальні
+      enum: [accepted, preparing, issued, cancelled]
+      example: accepted
+
+    Dish:
+      type: object
+      description: Страва або напій у каталозі їдальні коледжу
+      required: [id, name, category, price, weightGrams, calories, isAvailable, allergens, createdAt]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        category:
+          $ref: "#/components/schemas/DishCategory"
+        price:
+          type: number
+          exclusiveMinimum: 0
+          description: Ціна за порцію у гривнях
+        weightGrams:
+          type: integer
+          minimum: 10
+          maximum: 2000
+          description: Вихід порції у грамах (або мілілітрах)
+        calories:
+          type: [integer, "null"]
+          minimum: 0
+          description: Енергетична цінність (ккал на порцію)
+        isAvailable:
+          type: boolean
+          description: Чи доступна страва для замовлення сьогодні
+        allergens:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+      example:
+        id: 101
+        name: Борщ український зі сметаною та пампушками
+        category: first_course
+        price: 55.0
+        weightGrams: 350
+        calories: 290
+        isAvailable: true
+        allergens: [gluten, lactose]
+        createdAt: "2026-10-18T08:00:00Z"
+
+    CreateDishRequest:
+      type: object
+      description: Запит на додавання нової страви до каталогу
+      required: [name, category, price, weightGrams]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        category:
+          $ref: "#/components/schemas/DishCategory"
+        price:
+          type: number
+          exclusiveMinimum: 0
+        weightGrams:
+          type: integer
+          minimum: 10
+          maximum: 2000
+        calories:
+          type: [integer, "null"]
+          minimum: 0
+        isAvailable:
+          type: boolean
+          default: true
+        allergens:
+          type: array
+          items:
+            type: string
+      example:
+        name: Котлета по-київськи з картопляним пюре
+        category: main_course
+        price: 78.5
+        weightGrams: 280
+        calories: 460
+        isAvailable: true
+        allergens: [gluten, lactose, eggs]
+
+    UpdateDishRequest:
+      type: object
+      description: Запит на часткове оновлення страви (щонайменше 1 поле)
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        category:
+          $ref: "#/components/schemas/DishCategory"
+        price:
+          type: number
+          exclusiveMinimum: 0
+        weightGrams:
+          type: integer
+          minimum: 10
+          maximum: 2000
+        calories:
+          type: [integer, "null"]
+          minimum: 0
+        isAvailable:
+          type: boolean
+        allergens:
+          type: array
+          items:
+            type: string
+      example:
+        price: 60.0
+        isAvailable: true
+
+    DishPage:
+      type: object
+      description: Сторінка списку страв
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Dish"
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+      example:
+        items:
+          - id: 101
+            name: Борщ український зі сметаною та пампушками
+            category: first_course
+            price: 55.0
+            weightGrams: 350
+            calories: 290
+            isAvailable: true
+            allergens: [gluten, lactose]
+            createdAt: "2026-10-18T08:00:00Z"
+        page: 1
+        pageSize: 10
+        total: 1
+
+    Menu:
+      type: object
+      description: Денне меню їдальні на певну дату та прийом їжі
+      required: [id, menuDate, mealType, dishIds, note, publishedById, createdAt]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        menuDate:
+          type: string
+          format: date
+        mealType:
+          $ref: "#/components/schemas/MealType"
+        dishIds:
+          type: array
+          minItems: 1
+          items:
+            type: integer
+            minimum: 1
+        note:
+          type: [string, "null"]
+          maxLength: 250
+        publishedById:
+          type: integer
+          readOnly: true
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+      example:
+        id: 12
+        menuDate: "2026-10-19"
+        mealType: lunch
+        dishIds: [101, 102, 105]
+        note: Гарячі комплексні обіди з 11:30 до 14:30
+        publishedById: 3
+        createdAt: "2026-10-18T15:00:00Z"
+
+    CreateMenuRequest:
+      type: object
+      description: Запит на публікацію денного меню
+      required: [menuDate, mealType, dishIds]
+      additionalProperties: false
+      properties:
+        menuDate:
+          type: string
+          format: date
+        mealType:
+          $ref: "#/components/schemas/MealType"
+        dishIds:
+          type: array
+          minItems: 1
+          items:
+            type: integer
+            minimum: 1
+        note:
+          type: [string, "null"]
+          maxLength: 250
+      example:
+        menuDate: "2026-10-19"
+        mealType: lunch
+        dishIds: [101, 102, 105]
+        note: Гарячі комплексні обіди з 11:30 до 14:30
+
+    MenuPage:
+      type: object
+      description: Сторінка списку денних меню
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Menu"
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+      example:
+        items:
+          - id: 12
+            menuDate: "2026-10-19"
+            mealType: lunch
+            dishIds: [101, 102, 105]
+            note: Гарячі комплексні обіди з 11:30 до 14:30
+            publishedById: 3
+            createdAt: "2026-10-18T15:00:00Z"
+        page: 1
+        pageSize: 10
+        total: 1
+
+    OrderItem:
+      type: object
+      description: Позиція замовлення (конкретна страва та її кількість у замовленні)
+      required: [id, orderId, dishId, dishName, quantity, unitPrice, lineTotal]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        orderId:
+          type: integer
+          readOnly: true
+        dishId:
+          type: integer
+          minimum: 1
+        dishName:
+          type: string
+          readOnly: true
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 20
+        unitPrice:
+          type: number
+          readOnly: true
+        lineTotal:
+          type: number
+          readOnly: true
+      example:
+        id: 1
+        orderId: 42
+        dishId: 101
+        dishName: Борщ український зі сметаною та пампушками
+        quantity: 2
+        unitPrice: 55.0
+        lineTotal: 110.0
+
+    CreateOrderItemRequest:
+      type: object
+      description: Запит на додавання позиції до замовлення
+      required: [dishId, quantity]
+      additionalProperties: false
+      properties:
+        dishId:
+          type: integer
+          minimum: 1
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 20
+      example:
+        dishId: 101
+        quantity: 2
+
+    OrderItemPage:
+      type: object
+      description: Сторінка вкладеної колекції позицій замовлення
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+      example:
+        items:
+          - id: 1
+            orderId: 42
+            dishId: 101
+            dishName: Борщ український зі сметаною та пампушками
+            quantity: 2
+            unitPrice: 55.0
+            lineTotal: 110.0
+        page: 1
+        pageSize: 10
+        total: 1
+
+    Order:
+      type: object
+      description: Замовлення в їдальні коледжу
+      required: [id, customerId, status, totalAmount, pickupCode, comment, createdAt, issuedAt]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        customerId:
+          type: integer
+          readOnly: true
+        status:
+          allOf:
+            - $ref: "#/components/schemas/OrderStatus"
+          readOnly: true
+        totalAmount:
+          type: number
+          minimum: 0
+          readOnly: true
+        pickupCode:
+          type: string
+          readOnly: true
+        comment:
+          type: [string, "null"]
+          maxLength: 200
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+        issuedAt:
+          type: [string, "null"]
+          format: date-time
+          readOnly: true
+      example:
+        id: 42
+        customerId: 15
+        status: accepted
+        totalAmount: 110.0
+        pickupCode: A-042
+        comment: Без цибулі, будь ласка
+        createdAt: "2026-10-18T11:45:00Z"
+        issuedAt: null
+
+    CreateOrderRequest:
+      type: object
+      description: Запит на створення нового замовлення з початковим переліком страв
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/CreateOrderItemRequest"
+        comment:
+          type: [string, "null"]
+          maxLength: 200
+      example:
+        items:
+          - dishId: 101
+            quantity: 2
+        comment: Без цибулі, будь ласка
+
+    UpdateOrderRequest:
+      type: object
+      description: Запит на часткове оновлення замовлення (поки не готується)
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        comment:
+          type: [string, "null"]
+          maxLength: 200
+      example:
+        comment: Додайте дві серветки, заберу о 12:15
+
+    UpdateOrderStatusRequest:
+      type: object
+      description: Запит на зміну стану замовлення за правилами предметної області (accepted -> preparing -> issued)
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+      example:
+        status: preparing
+
+    OrderPage:
+      type: object
+      description: Сторінка списку замовлень
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Order"
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+      example:
+        items:
+          - id: 42
+            customerId: 15
+            status: accepted
+            totalAmount: 110.0
+            pickupCode: A-042
+            comment: Без цибулі, будь ласка
+            createdAt: "2026-10-18T11:45:00Z"
+            issuedAt: null
+        page: 1
+        pageSize: 10
+        total: 1
+
     ProblemDetails:
       type: object
       description: Опис помилки за RFC 9457
@@ -144,6 +1114,12 @@ components:
           type: string
         instance:
           type: string
+      example:
+        type: about:blank
+        title: Конфлікт зі станом ресурсу
+        status: 409
+        detail: Замовлення №42 перебуває у стані accepted; видача (issued) можлива лише після стану preparing
+        instance: /api/v1/orders/42/status
 
     ValidationProblem:
       allOf:
@@ -161,6 +1137,15 @@ components:
                     type: string
                   message:
                     type: string
+      example:
+        type: about:blank
+        title: Дані не пройшли перевірку
+        status: 422
+        detail: Помилка валідації полів запиту
+        instance: /api/v1/orders
+        errors:
+          - field: items
+            message: Замовлення має містити щонайменше 1 позицію
 
   responses:
     BadRequest:
@@ -169,33 +1154,84 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/ProblemDetails"
+          example:
+            type: about:blank
+            title: Некоректний запит
+            status: 400
+            detail: Синтаксична помилка JSON або некоректне значення параметра запиту (page >= 1)
+            instance: /api/v1/orders
     Unauthorized:
       description: Відсутній або недійсний токен
       content:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/ProblemDetails"
+          example:
+            type: about:blank
+            title: Відсутній або недійсний токен
+            status: 401
+            detail: Для виконання запиту необхідний заголовок Authorization Bearer <токен>
+            instance: /api/v1/orders
     Forbidden:
-      description: Недостатньо прав
+      description: Недостатньо прав (обмеження за роллю кухаря або власника замовлення)
       content:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/ProblemDetails"
+          example:
+            type: about:blank
+            title: Недостатньо прав
+            status: 403
+            detail: Видача замовлення (issued) та керування меню дозволені лише користувачам із роллю cook
+            instance: /api/v1/orders/42/status
     NotFound:
       description: Ресурс не знайдено
       content:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/ProblemDetails"
+          example:
+            type: about:blank
+            title: Ресурс не знайдено
+            status: 404
+            detail: Замовлення з id=999 не існує
+            instance: /api/v1/orders/999
     Conflict:
-      description: Конфлікт зі станом ресурсу
+      description: Конфлікт зі станом ресурсу (недопустимий перехід станів замовлення)
       content:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/ProblemDetails"
+          example:
+            type: about:blank
+            title: Конфлікт зі станом ресурсу
+            status: 409
+            detail: Замовлення №42 перебуває у стані accepted; видача (issued) можлива лише після стану preparing
+            instance: /api/v1/orders/42/status
+    PreconditionFailed:
+      description: Передумова If-Match не виконана (ETag ресурсу змінився)
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+          example:
+            type: about:blank
+            title: Передумова не виконана (Precondition Failed)
+            status: 412
+            detail: Версія замовлення змінилася (ETag не збігається із заголовком If-Match). Перечитайте ресурс перед оновленням
+            instance: /api/v1/orders/42
     ValidationFailed:
       description: Дані не пройшли перевірку
       content:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/ValidationProblem"
+          example:
+            type: about:blank
+            title: Дані не пройшли перевірку
+            status: 422
+            detail: Помилка валідації полів запиту
+            instance: /api/v1/orders
+            errors:
+              - field: items
+                message: Замовлення має містити щонайменше 1 позицію
